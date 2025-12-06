@@ -50,7 +50,7 @@ jobs:
       - name: Debug file list
         run: |
           pwd
-        ls -R .
+          ls -R .
 
       # --------------------------------
       # Bot 実行
