@@ -24,7 +24,8 @@ jobs:
           sudo apt-get install -y ffmpeg
           sudo apt-get install -y fonts-ipafont-gothic
           pip install --upgrade pip
-          pip install feedparser requests pymupdf pillow moviepy google-generativeai
+          pip install feedparser requests pymupdf pillow google-generativeai
+          pip install "moviepy==1.0.3"
 
       - name: Run script
         working-directory: /home/runner/work/paper_ai_bot/paper_ai_bot
