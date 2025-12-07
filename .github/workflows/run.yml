@@ -34,7 +34,7 @@ jobs:
           python --version
           echo "Installed moviepy:"
           pip show moviepy || echo "moviepy NOT installed"
-          python paper_voice_bot.py
+          python main.py
 
       - name: Upload output artifacts
         uses: actions/upload-artifact@v4
