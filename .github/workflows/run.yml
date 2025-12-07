@@ -27,10 +27,15 @@ jobs:
           pip install feedparser requests pymupdf pillow moviepy google-generativeai
 
       - name: Run script
-        working-directory: /home/runner/work/paper_ai_bot
+        working-directory: /home/runner/work/paper_ai_bot/paper_ai_bot
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          echo "Listing repository structure:"
-          ls -R .
+          echo "Python version:"
+          python --version
+          echo "Installed moviepy:"
+          pip show moviepy || echo "moviepy NOT installed"
+          python main.py
 
       - name: Upload output artifacts
         uses: actions/upload-artifact@v4
