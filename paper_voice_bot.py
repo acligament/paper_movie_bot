@@ -5,16 +5,18 @@ import os
 import re
 from datetime import datetime
 from urllib.parse import quote_plus
-from openai import OpenAI
 
 # -----------------------------
 # 追加：画像 & 動画生成モジュール
 # -----------------------------
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
 
-# OpenAI API（要約用）
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+# -----------------------------
+#  Gemini API（無料要約用）
+# -----------------------------
+import google.generativeai as genai
+genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
 SAVE_DIR = "outputs"
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -87,11 +89,10 @@ def extract_text_from_pdf(pdf_path):
 
 
 # -------------------------------------------------------
-# ④ 日本語要約（OpenAI）
+# ④ 日本語要約（Google Gemini・無料）
 # -------------------------------------------------------
 def summarize_text_ja(text):
 
-    # 長文対策
     if len(text) > 10000:
         text = text[:10000]
 
@@ -101,20 +102,17 @@ def summarize_text_ja(text):
 
 条件:
 - 箇条書き 3点以内
-- 各点は最大 30文字
+- 各点は最大 30文字以内
 - 専門用語は簡単に
 
 本文:
 {text}
 """
 
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2
-    )
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    response = model.generate_content(prompt)
 
-    return res.choices[0].message.content
+    return response.text
 
 
 # -------------------------------------------------------
@@ -170,7 +168,7 @@ def generate_voice_voicevox(
 
 
 # -------------------------------------------------------
-# ⑥ スライド構成を OpenAI で作る（5スライド）
+# ⑥ スライド構成（Gemini で生成）
 # -------------------------------------------------------
 def slide_structure_from_summary(title, summary):
 
@@ -183,7 +181,7 @@ def slide_structure_from_summary(title, summary):
 4. RESULT: 結果
 5. CONCLUSION: 結論
 
-以下の形式で返してください：
+形式：
 TITLE: ...
 PURPOSE: ...
 METHOD: ...
@@ -197,11 +195,8 @@ CONCLUSION: ...
 {summary}
 """
 
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    ).choices[0].message.content
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    res = model.generate_content(prompt).text
 
     slides = {}
     for line in res.split("\n"):
@@ -213,7 +208,7 @@ CONCLUSION: ...
 
 
 # -------------------------------------------------------
-# ⑦ Pillow でシンプルスライド画像を生成
+# ⑦ スライド画像生成
 # -------------------------------------------------------
 def create_slide_image(text, filename):
     W, H = 1920, 1080
@@ -228,7 +223,7 @@ def create_slide_image(text, filename):
 
 
 # -------------------------------------------------------
-# ⑧ スライドから動画生成（MoviePy）
+# ⑧ 動画生成
 # -------------------------------------------------------
 def generate_video(slide_files, audio_path, output_path):
 
