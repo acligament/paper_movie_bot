@@ -8,10 +8,7 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: paper_ai_bot
-
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -38,6 +35,7 @@ jobs:
           MAX_PAPERS: "3"
           SLIDE_SECONDS: "4"
         run: |
+          cd paper_ai_bot
           python main.py
 
       - name: Upload outputs
