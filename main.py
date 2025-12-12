@@ -1,60 +1,75 @@
 import os
 import re
-import requests
-import feedparser
-import fitz  # PyMuPDF
+import json
+import time
+import textwrap
 from datetime import datetime
 from urllib.parse import quote_plus
 
-# ================================
-# Gemini API（RESTモード強制）
-# ================================
-import google.generativeai as genai
+import requests
+import feedparser
+import fitz  # PyMuPDF
 
-os.environ["GOOGLE_API_USE_REST"] = "true"     # ★ gRPC 無効化（503防止）
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-model = genai.GenerativeModel("gemini-pro")
+from gtts import gTTS
+from PIL import Image, ImageDraw, ImageFont
 
-# ================================
-# Movie 作成用
-# ================================
-from PIL import Image, ImageDraw
-from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+# moviepy 2.x 対応：moviepy.editor は使わない
+from moviepy import ImageClip, AudioFileClip, concatenate_videoclips
 
 SAVE_DIR = "outputs"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# ================================
-# ファイル名を安全にする
-# ================================
+# -----------------------------
+# 設定（環境変数で上書き可）
+# -----------------------------
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")  # 例：gemini-1.5-flash
+MAX_PAPERS = int(os.environ.get("MAX_PAPERS", "3"))
+SLIDE_SECONDS = float(os.environ.get("SLIDE_SECONDS", "4"))
+TTS_LANG = os.environ.get("TTS_LANG", "ja")  # gTTS: "ja"
+FONT_PATH = os.environ.get("FONT_PATH", "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf")
+
+# -----------------------------
+# Utility
+# -----------------------------
 def safe_filename(name: str) -> str:
     name = re.sub(r'[<>:"/\\|?*\r\n]', "_", name)
-    return re.sub(r"_+", "_", name).strip("_")
+    name = re.sub(r"_+", "_", name)
+    return name.strip("_")
 
-# ================================
-# ① arXiv 最新AI論文取得
-# ================================
-def fetch_arxiv_papers():
+def http_get(url: str, timeout=30):
+    return requests.get(url, timeout=timeout, headers={"User-Agent": "paper-ai-bot/1.0"})
+
+def http_post(url: str, json_data: dict, timeout=60):
+    return requests.post(url, json=json_data, timeout=timeout, headers={"Content-Type": "application/json"})
+
+# -----------------------------
+# ① arXiv 取得
+# -----------------------------
+def fetch_arxiv_papers(max_results: int):
     raw_query = "cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR cat:cs.CV OR cat:stat.ML"
-    encoded = quote_plus(raw_query)
+    encoded_query = quote_plus(raw_query)
 
     url = (
         "http://export.arxiv.org/api/query?"
-        f"search_query={encoded}&start=0&max_results=3&sortBy=submittedDate&sortOrder=descending"
+        f"search_query={encoded_query}"
+        "&start=0"
+        f"&max_results={max_results}"
+        "&sortBy=submittedDate"
+        "&sortOrder=descending"
     )
-
     feed = feedparser.parse(url)
     return feed.entries
 
-# ================================
+# -----------------------------
 # ② PDF ダウンロード
-# ================================
-def download_pdf(pdf_url, filename):
+# -----------------------------
+def download_pdf(pdf_url: str, filename: str):
     try:
-        res = requests.get(pdf_url, timeout=20)
+        res = http_get(pdf_url, timeout=40)
         res.raise_for_status()
     except Exception as e:
-        print(f"PDF download failed: {e}")
+        print(f"PDF download failed: {pdf_url} error={e}")
         return None
 
     path = os.path.join(SAVE_DIR, filename)
@@ -62,170 +77,182 @@ def download_pdf(pdf_url, filename):
         f.write(res.content)
     return path
 
-# ================================
-# ③ PDF → テキスト
-# ================================
-def extract_text(pdf_path):
+# -----------------------------
+# ③ PDF → テキスト抽出
+# -----------------------------
+def extract_text_from_pdf(pdf_path: str) -> str:
     if not pdf_path:
         return ""
-
     try:
         doc = fitz.open(pdf_path)
-        text = "".join([p.get_text() for p in doc])
-        return text
-    except:
+    except Exception as e:
+        print(f"PDF open failed: {pdf_path} error={e}")
         return ""
 
-# ================================
-# ④ Gemini による日本語要約
-# ================================
-def summarize_text_ja(text):
-    MAX_CHARS = 5000
-    if len(text) > MAX_CHARS:
-        text = text[:MAX_CHARS]
+    texts = []
+    for page in doc:
+        texts.append(page.get_text())
+    return "\n".join(texts)
 
-    prompt = f"""
-以下の英語論文の内容を、日本語で簡潔に3点に要約してください。
+def truncate_for_llm(text: str, max_chars=12000) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_chars]
 
+# -----------------------------
+# ④ Gemini（REST）で日本語要約
+#    - SDK不使用で Illegal metadata 回避
+# -----------------------------
+def gemini_summarize_ja(text: str) -> str:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY が空です。GitHub Secrets に設定してください。")
+
+    prompt = f"""あなたは日本語が得意なAI研究者です。
+以下の論文本文を、日本語で短く要約してください。
+
+条件:
+- 箇条書き3点以内
+- 各点は最大40文字
+- 核心だけ
+- 専門用語はできるだけ平易に
+
+本文:
 {text}
 """
-    response = model.generate_content(prompt)
-    return response.text.strip()
 
-# ================================
-# ⑤ VOICEVOX（四国めたん）
-# ================================
-def get_speaker_id(name="四国めたん", style="ノーマル"):
-    data = requests.get("http://localhost:50021/speakers").json()
-    for sp in data:
-        if sp["name"] == name:
-            for st in sp["styles"]:
-                if st["name"] == style:
-                    return st["id"]
-    return None
+    endpoint = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+        f"?key={GEMINI_API_KEY}"
+    )  # generateContent REST  [oai_citation:2‡Google AI for Developers](https://ai.google.dev/api?utm_source=chatgpt.com)
 
-def voicevox_tts(text, filename, speed=1.1):
-    speaker = get_speaker_id()
-    if speaker is None:
-        raise RuntimeError("四国めたんが見つかりません")
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": prompt}],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 300,
+        },
+    }
 
-    cleaned = text.replace("**", "")
+    r = http_post(endpoint, payload, timeout=90)
+    if r.status_code != 200:
+        raise RuntimeError(f"Gemini REST error {r.status_code}: {r.text[:500]}")
 
-    query = requests.post(
-        "http://localhost:50021/audio_query",
-        params={"text": cleaned, "speaker": speaker}
-    ).json()
+    data = r.json()
+    # candidates[0].content.parts[0].text が基本
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception:
+        return json.dumps(data, ensure_ascii=False)[:500]
 
-    query["speedScale"] = speed
-
-    audio = requests.post(
-        "http://localhost:50021/synthesis",
-        params={"speaker": speaker},
-        json=query
-    )
-
-    path = os.path.join(SAVE_DIR, filename)
-    with open(path, "wb") as f:
-        f.write(audio.content)
-
+# -----------------------------
+# ⑤ gTTS で音声生成（無料枠で簡易に）
+# -----------------------------
+def tts_gtts(text: str, out_mp3: str) -> str:
+    path = os.path.join(SAVE_DIR, out_mp3)
+    # 読み上げに邪魔な記号を除去
+    cleaned = text.replace("**", "").replace("_", "").strip()
+    gTTS(text=cleaned, lang=TTS_LANG).save(path)
     return path
 
-# ================================
-# ⑥ スライド構成
-# ================================
-def build_slide_structure(title, summary):
-    prompt = f"""
-次の論文について、動画用5スライドに整理してください：
-
-1. TITLE
-2. PURPOSE
-3. METHOD
-4. RESULT
-5. CONCLUSION
-
-タイトル:
-{title}
-
-要約:
-{summary}
-"""
-
-    res = model.generate_content(prompt).text
-    slides = {}
-    for line in res.split("\n"):
-        if ":" in line:
-            key, val = line.split(":", 1)
-            slides[key.strip()] = val.strip()
+# -----------------------------
+# ⑥ スライド用テキスト構成
+# -----------------------------
+def build_slides(title: str, summary: str):
+    # summary を箇条書きとして扱う
+    slides = []
+    slides.append(("TITLE", title))
+    slides.append(("SUMMARY", summary))
+    slides.append(("OUTRO", "以上です。良い一日を！"))
     return slides
 
-# ================================
-# ⑦ 画像生成（Pillow）
-# ================================
-def create_slide_image(text, filename):
-    W, H = 1920, 1080
-    img = Image.new("RGB", (W, H), "white")
+# -----------------------------
+# ⑦ Pillowでスライド画像生成（日本語フォント）
+# -----------------------------
+def create_slide_image(header: str, body: str, out_png: str) -> str:
+    W, H = 1280, 720
+    img = Image.new("RGB", (W, H), color="white")
     draw = ImageDraw.Draw(img)
 
-    draw.multiline_text((100, 100), text, fill="black", spacing=20)
+    # フォント（Actionsでは fonts-ipafont-gothic を入れる）
+    try:
+        font_h = ImageFont.truetype(FONT_PATH, 44)
+        font_b = ImageFont.truetype(FONT_PATH, 34)
+    except Exception:
+        font_h = ImageFont.load_default()
+        font_b = ImageFont.load_default()
 
-    img.save(filename)
-    return filename
+    x, y = 70, 60
+    draw.text((x, y), header, fill="black", font=font_h)
 
-# ================================
-# ⑧ MoviePy で動画作成
-# ================================
-def generate_video(slide_paths, audio_path, output_path):
-    clips = [ImageClip(p).set_duration(4) for p in slide_paths]
-    video = concatenate_videoclips(clips)
-    audio = AudioFileClip(audio_path)
+    wrapped = "\n".join(textwrap.wrap(body, width=28))
+    draw.multiline_text((x, y + 90), wrapped, fill="black", font=font_b, spacing=18)
 
-    final = video.set_audio(audio)
-    final.write_videofile(output_path, fps=24)
-    return output_path
+    path = os.path.join(SAVE_DIR, out_png)
+    img.save(path)
+    return path
 
-# ================================
+# -----------------------------
+# ⑧ 動画生成（mp3 + png）
+# -----------------------------
+def make_video(slide_pngs, audio_mp3, out_mp4) -> str:
+    clips = [ImageClip(p).with_duration(SLIDE_SECONDS) for p in slide_pngs]
+    video = concatenate_videoclips(clips, method="compose")
+
+    audio = AudioFileClip(audio_mp3)
+    final = video.with_audio(audio)
+
+    out_path = os.path.join(SAVE_DIR, out_mp4)
+    final.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac")
+    return out_path
+
+# -----------------------------
 # MAIN
-# ================================
+# -----------------------------
 def main():
-
     print("📥 Fetching AI papers...")
-    papers = fetch_arxiv_papers()
+    papers = fetch_arxiv_papers(MAX_PAPERS)
 
     if not papers:
         print("No papers found.")
         return
 
-    # 1本だけ動画化する
+    # 先頭1本だけ動画化（安定優先）
     entry = papers[0]
-    raw_title = entry.title
+    raw_title = entry.title.strip()
     print(f"\n▶ Processing: {raw_title}")
 
-    filename = safe_filename(raw_title)
     pdf_url = entry.id.replace("abs", "pdf") + ".pdf"
-    pdf_path = download_pdf(pdf_url, f"{filename}.pdf")
+    pdf_path = download_pdf(pdf_url, safe_filename(raw_title) + ".pdf")
 
-    text = extract_text(pdf_path)
-    summary = summarize_text_ja(text)
+    text = extract_text_from_pdf(pdf_path)
+    if not text:
+        print("⚠ PDF text extract failed.")
+        return
 
-    # スライド構成
-    structure = build_slide_structure(raw_title, summary)
+    text = truncate_for_llm(text, max_chars=12000)
 
-    slide_files = []
-    for key in ["TITLE", "PURPOSE", "METHOD", "RESULT", "CONCLUSION"]:
-        msg = f"{key}\n\n{structure.get(key, '')}"
-        path = os.path.join(SAVE_DIR, f"{key}.png")
-        create_slide_image(msg, path)
-        slide_files.append(path)
+    print("🧠 Summarizing by Gemini (REST)...")
+    summary_ja = gemini_summarize_ja(text)
+    print("✅ Summary done.")
 
-    # ナレーション
+    # スライド
+    slides = build_slides(raw_title, summary_ja)
+    slide_pngs = []
+    for i, (h, b) in enumerate(slides, start=1):
+        slide_pngs.append(create_slide_image(h, b, f"slide_{i:02d}.png"))
+
+    # 音声（要約読み上げ）
     today = datetime.utcnow().strftime("%Y%m%d")
-    audio_path = voicevox_tts(summary, f"narration_{today}.wav")
+    audio_mp3 = tts_gtts(summary_ja, f"narration_{today}.mp3")
 
-    # 動画生成
-    video_path = os.path.join(SAVE_DIR, f"paper_video_{today}.mp4")
-    generate_video(slide_files, audio_path, video_path)
-
-    print(f"\n🎉 完成！ → {video_path}")
+    # 動画
+    print("🎬 Creating video...")
+    mp4 = make_video(slide_pngs, audio_mp3, f"paper_video_{today}.mp4")
+    print(f"🎉 Done: {mp4}")
 
 if __name__ == "__main__":
     main()
