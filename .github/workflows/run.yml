@@ -1,13 +1,9 @@
-name: Daily Paper Movie Bot (Gemini REST)
-
-on:
-  schedule:
-    - cron: "0 22 * * *" # UTC 22:00 = JST 07:00
-  workflow_dispatch:
-
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: paper_ai_bot
 
     steps:
       - name: Checkout code
@@ -32,10 +28,10 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          python paper_ai_bot/main.py
+          python main.py
 
       - name: Upload outputs
         uses: actions/upload-artifact@v4
         with:
           name: outputs
-          path: paper_ai_bot/outputs
+          path: outputs
