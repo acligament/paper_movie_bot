@@ -224,9 +224,30 @@ def speedup_audio_ffmpeg(in_path: str, out_path: str, speed: float = 1.15) -> st
         return in_path
     return out_path
 
+def generate_slide_audios(slide_scripts):
+    audio_files = []
+    for i, text in enumerate(slide_scripts, 1):
+        mp3 = generate_tts_mp3(text, f"slide_audio_{i:02d}.mp3")
+        audio_files.append(mp3)
+    return audio_files
+
 # -----------------------------
 # 6) Slide text & image
 # -----------------------------
+
+def build_slide_scripts(title: str, summary: str):
+    bullets = [s.strip(" -・") for s in summary.split("\n") if s.strip()]
+    while len(bullets) < 3:
+        bullets.append("")
+
+    return [
+        f"本日の論文紹介です。{title}。",
+        f"ポイント1。{bullets[0]}。",
+        f"ポイント2。{bullets[1]}。",
+        f"ポイント3。{bullets[2]}。",
+        "以上で紹介を終わります。"
+    ]
+
 def build_script(title: str, summary: str) -> str:
     # 読み上げ用に軽く整形
     summary = summary.replace("*", "").replace("#", "").strip()
@@ -330,10 +351,12 @@ def main():
 
     # slides + scripts（← 新）
     slide_files= build_slides(title, summary)
+    slide_scripts = build_slide_scripts(title, summary)
 
     # narration per slide（← 新）
     audio_files = generate_slide_audios(slide_scripts)
 
+    
     # video（← 新：音声長に完全同期）
     today = datetime.utcnow().strftime("%Y%m%d")
     out = generate_video(
