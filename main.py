@@ -282,12 +282,21 @@ def build_slides(title: str, summary: str):
 # -----------------------------
 # 7) Video
 # -----------------------------
-def generate_video(slide_files, audio_path, out_mp4):
-    clips = [ImageClip(p).set_duration(SLIDE_SECONDS) for p in slide_files]
-    video = concatenate_videoclips(clips, method="compose")
-    audio = AudioFileClip(audio_path)
+def generate_video(slide_files, audio_files, out_mp4):
+    clips = []
 
-    final = video.set_audio(audio)
+    for img, audio_path in zip(slide_files, audio_files):
+        audio = AudioFileClip(audio_path)
+        duration = audio.duration + 0.2  # 少し余白
+
+        clip = (
+            ImageClip(img)
+            .set_duration(duration)
+            .set_audio(audio)
+        )
+        clips.append(clip)
+
+    final = concatenate_videoclips(clips, method="compose")
     out_path = os.path.join(SAVE_DIR, out_mp4)
     final.write_videofile(out_path, fps=24, codec="libx264", audio_codec="aac")
     return out_path
@@ -319,21 +328,20 @@ def main():
     print("\n✅ Summary (JA):")
     print(summary)
 
-    # slides
-    slide_files = build_slides(title, summary)
+    # slides + scripts（← 新）
+    slide_files, slide_scripts = build_slides_with_scripts(title, summary)
 
-    # narration
+    # narration per slide（← 新）
+    audio_files = generate_slide_audios(slide_scripts)
+
+    # video（← 新：音声長に完全同期）
     today = datetime.utcnow().strftime("%Y%m%d")
-    script = build_script(title, summary)
-    mp3 = generate_tts_mp3(script, f"narration_{today}.mp3")
+    out = generate_video(
+        slide_files,
+        audio_files,
+        f"paper_video_{today}.mp4"
+    )
 
-    # optional speed up
-    mp3_fast = os.path.join(SAVE_DIR, f"narration_{today}_fast.mp3")
-    mp3_used = speedup_audio_ffmpeg(mp3, mp3_fast, speed=1.15)
-
-    # video
-    out = generate_video(slide_files, mp3_used, f"paper_video_{today}.mp4")
-    print(f"\n🎉 Done! Video: {out}")
-
+    
 if __name__ == "__main__":
     main()
