@@ -319,6 +319,18 @@ def create_slide_image(lines: str, out_png: str) -> str:
     img.save(path)
     return path
 
+def build_slide_scripts(title: str, summary: str):
+    bullets = [s.strip(" -・") for s in summary.split("\n") if s.strip()]
+    while len(bullets) < 3:
+        bullets.append("")
+
+    return [
+        f"{title}。",
+        f"ポイント1。{bullets[0]}。",
+        f"ポイント2。{bullets[1]}。",
+        f"ポイント3。{bullets[2]}。",
+        "以上で紹介を終わります。"
+    ]
 
 def build_slides(title: str, summary: str, pdf_path: str):
     bullets = [s.strip(" -・") for s in summary.split("\n") if s.strip()]
